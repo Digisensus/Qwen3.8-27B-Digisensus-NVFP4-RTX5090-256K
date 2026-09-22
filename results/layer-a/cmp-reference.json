@@ -1,0 +1,42 @@
+{
+ "prose": {
+  "mean_kl": 0.02152002098697267,
+  "top1_agree": 0.9361250055331769,
+  "mean_rank": 1.1045106458324112,
+  "mean_dlogprob": -0.026841431379965232,
+  "kl_floored_frac": 0.0812026913372582,
+  "positions": 22591
+ },
+ "tool_call": {
+  "mean_kl": 0.014243910834459318,
+  "top1_agree": 0.9759114583333334,
+  "mean_rank": 1.1712239583333333,
+  "mean_dlogprob": -0.011532211004884038,
+  "kl_floored_frac": 0.14645182291666667,
+  "positions": 3072
+ },
+ "json_struct": {
+  "mean_kl": 0.004477513385908907,
+  "top1_agree": 0.9921552436003304,
+  "mean_rank": 1.0076383154417836,
+  "mean_dlogprob": -0.008435412114065403,
+  "kl_floored_frac": 0.11907514450867052,
+  "positions": 4844
+ },
+ "reasoning": {
+  "mean_kl": 0.01689313879867124,
+  "top1_agree": 0.9411458333333333,
+  "mean_rank": 1.6934895833333334,
+  "mean_dlogprob": -0.01586814834396004,
+  "kl_floored_frac": 0.08652994791666667,
+  "positions": 46080
+ },
+ "code": {
+  "mean_kl": 0.00839536262929751,
+  "top1_agree": 0.9786276715410573,
+  "mean_rank": 1.0853900615364256,
+  "mean_dlogprob": -0.008264398297939462,
+  "kl_floored_frac": 0.09626811354463045,
+  "positions": 30226
+ }
+}

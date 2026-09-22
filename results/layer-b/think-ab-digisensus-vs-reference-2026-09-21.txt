@@ -1,0 +1,17 @@
+24 thinking-on requests {'json': 8, 'tools': 8, 'reasoning': 8}; greedy x1 + logged sampling x2; reference on :9001, digisensus on :9003
+
+=== greedy ===
+kind         n |  reason tok (median)          mean | content (mean) |   truncated |       valid | r6 shorter
+json         8 |     2371 ->     2122     2545->  2334 |  3471-> 2164 |   2 ->   1 |   6 ->   7 |    5/8
+reasoning    8 |     4798 ->     9426     7030->  9227 |   280->  278 |   1 ->   2 |   7 ->   6 |    2/8
+tools        8 |      298 ->      273     1093->   884 |    33->   37 |   0 ->   0 |   8 ->   8 |    4/8
+ALL         24 |     2194 ->     2082     3556->  4148 |  1261->  827 |   3 ->   3 |  21 ->  21 |   11/24
+
+=== sampled ===
+kind         n |  reason tok (median)          mean | content (mean) |   truncated |       valid | r6 shorter
+json        16 |     2480 ->     3358     2717->  3072 |  2767-> 2024 |   3 ->   2 |  13 ->  14 |    3/16
+reasoning   16 |     8062 ->     6766     8304->  7051 |   395->  457 |   2 ->   0 |  14 ->  16 |   11/16
+tools       16 |      232 ->      420      983->   910 |    39->   56 |   0 ->   0 |  16 ->  16 |    5/16
+ALL         48 |     2671 ->     2563     4001->  3678 |  1067->  846 |   5 ->   2 |  43 ->  46 |   19/48
+
+columns: reference -> digisensus

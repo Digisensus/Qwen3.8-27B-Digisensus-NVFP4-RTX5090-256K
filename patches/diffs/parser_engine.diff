@@ -1,0 +1,85 @@
+--- a/vllm/parser/engine/parser_engine.py
++++ b/vllm/parser/engine/parser_engine.py
+@@ -7,6 +7,7 @@
+ from __future__ import annotations
+ 
+ import json
++import os
+ from collections.abc import Sequence
+ from functools import cached_property
+ from typing import TYPE_CHECKING
+@@ -45,6 +46,10 @@
+ logger = init_logger(__name__)
+ 
+ 
++_STRIP_LEADING_CONTENT_NEWLINES = (
++    os.environ.get("VLLM_KEEP_LEADING_CONTENT_NEWLINES", "0") != "1"
++)
++
+ class ToolCallSlot:
+     __slots__ = (
+         "id",
+@@ -122,6 +127,7 @@
+         self._deferred_content: str = ""
+         self._deferred_reasoning: str = ""
+         self._content_has_nonws: bool = False
++        self._saw_reasoning_end: bool = False  # local patch, see _reset
+         self._suppress_tool_calls: bool = False
+ 
+         self._arg_converter = parser_engine_config.arg_converter
+@@ -199,6 +205,12 @@
+         self._deferred_content = ""
+         self._deferred_reasoning = ""
+         self._content_has_nonws = False
++        # LOCAL PATCH: the chat template separates reasoning from the answer with
++        # '</think>\n\n'; upstream hands that '\n\n' to the client as the start of
++        # `content`. Once a reasoning end has been seen in THIS output, leading
++        # newlines of the content are dropped (streaming and non-streaming).
++        # Set VLLM_KEEP_LEADING_CONTENT_NEWLINES=1 to restore upstream behaviour.
++        self._saw_reasoning_end = False
+         self._prompt_streaming_prepared = False
+ 
+     def adjust_request(
+@@ -509,12 +521,16 @@
+                 content_parts.append(event.value)
+             elif event.type == EventType.REASONING_END:
+                 self._reasoning_ended = True
++                self._saw_reasoning_end = True
+ 
+         raw_reasoning = "".join(reasoning_parts)
+         if self._strip_trailing_reasoning_ws:
+             raw_reasoning = raw_reasoning.rstrip()
+         reasoning = raw_reasoning or None
+-        content = "".join(content_parts) or None
++        content_str = "".join(content_parts)
++        if self._saw_reasoning_end and _STRIP_LEADING_CONTENT_NEWLINES:
++            content_str = content_str.lstrip("\r\n")
++        content = content_str or None
+         return reasoning, content
+ 
+     # ── Non-streaming: extract_reasoning_streaming ────────────────────
+@@ -716,6 +732,7 @@
+                     reasoning_parts.append(event.value)
+                 case EventType.REASONING_END:
+                     self._reasoning_ended = True
++                    self._saw_reasoning_end = True
+                 case EventType.TOOL_CALL_START:
+                     if not suppress:
+                         seen_tool_event = True
+@@ -744,6 +761,16 @@
+ 
+         content_str = "".join(content_parts)
+ 
++        if (
++            content_str
++            and not self._content_has_nonws
++            and self._saw_reasoning_end
++            and _STRIP_LEADING_CONTENT_NEWLINES
++        ):
++            # Still at the start of the content: whitespace-only content is deferred
++            # below, so everything before the first visible character is in hand here.
++            content_str = content_str.lstrip("\r\n")
++
+         if self._content_has_nonws:
+             pass
+         elif content_str:

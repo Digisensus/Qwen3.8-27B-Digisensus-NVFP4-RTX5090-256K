@@ -1,0 +1,76 @@
+# R6 TEST ENGINE — our R6 (reallocated) quant with the EXACT prod gpu1 config (image, patches, flags).
+# Port 9003, NOT on ai-internal: the router must never discover it. No restart.
+services:
+  vllm-r6-bench64:
+    image: vllm-qwen38:v0280-nvfp4kv
+    container_name: vllm-r6-bench64
+    ports:
+      - "9003:9000"
+    networks:
+      - default
+    volumes:
+      - /home/saulius/models/Qwen3.8-27B-Digisensus:/models/model:ro
+      - /home/saulius/vllm-gpu1/cache:/root/.cache
+      - /home/saulius/vllm-gpu1/healthcheck.sh:/healthcheck.sh:ro
+      # LOCAL PATCH 2026-09-19: llguidance JSON tolerates leading whitespace (MTP </think> boundary)
+      - /home/saulius/vllm-patches/backend_guidance.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/structured_output/backend_guidance.py:ro
+      # LOCAL BACKPORT 2026-09-19: vllm-project/vllm#48200 (grammar vs MTP at </think>)
+      - /home/saulius/vllm-patches/structured_output__init__.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/structured_output/__init__.py:ro
+      - /home/saulius/vllm-patches/scheduler.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/core/sched/scheduler.py:ro
+      # vllm#52393: stop strings must not fire inside the reasoning block
+      - /home/saulius/vllm-patches/detokenizer.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/engine/detokenizer.py:ro
+      # strip the template's '\n\n' after </think> from the start of content
+      - /home/saulius/vllm-patches/parser_engine.py:/usr/local/lib/python3.12/dist-packages/vllm/parser/engine/parser_engine.py:ro
+      # INT8 embeddings: pass quant_config to embed_tokens (main + MTP drafter)
+      - /home/saulius/vllm-patches/qwen3_5.py:/usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/qwen3_5.py:ro
+      - /home/saulius/vllm-patches/qwen3_5_mtp.py:/usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/qwen3_5_mtp.py:ro
+    environment:
+      - VLLM_ATTENTION_BACKEND=FLASHINFER
+      - VLLM_FLASHINFER_WORKSPACE_BUFFER_SIZE=134217728
+      - CUDA_MODULE_LOADING=LAZY
+      - PYTHONHASHSEED=0
+      - MAX_JOBS=4
+      - FLASHINFER_NUM_COMPILE_JOBS=4
+      - VLLM_NO_USAGE_STATS=1
+      # 2026-09-21: mixed-length traffic fragmented the caching allocator (921 MiB reserved-but-unusable) -> prefill OOM
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    shm_size: "16gb"
+    ipc: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              # One reserved device -> the container sees it as index 0; do not set CUDA_VISIBLE_DEVICES.
+              device_ids: ["GPU-9d65bafb-ac75-83d1-5780-f062be5b5bf0"]   # RTX 5090 @ 43:00.0 (index 2; index 1 is now a 3060 Ti)
+              capabilities: [gpu]
+    command: >-
+      --model /models/model
+      --served-model-name qwen qwen3.8-27b
+      --trust-remote-code
+      --language-model-only
+      --kv-cache-dtype nvfp4
+      --mamba-ssm-cache-dtype bfloat16
+      --mamba-cache-mode align
+      --enable-prefix-caching
+      --max-model-len 139264
+      --max-num-seqs 32
+      --max-num-batched-tokens 8192
+      --gpu-memory-utilization 0.90
+      --compilation-config '{"max_cudagraph_capture_size": 128}'
+      --speculative-config '{"method": "qwen3_5_mtp", "num_speculative_tokens": 3}'
+      --reasoning-parser qwen3
+      --structured-outputs-config '{"backend": "guidance", "disable_additional_properties": true}'
+      --enable-auto-tool-choice
+      --tool-call-parser qwen3_xml
+      --host 0.0.0.0
+      --port 9000
+    healthcheck:
+      # Liveness probe that catches a hung EngineCore without killing a busy one (see healthcheck.sh).
+      test: ["CMD-SHELL", "sh /healthcheck.sh"]
+      interval: 60s
+      timeout: 60s
+      retries: 3
+      start_period: 900s
+    restart: "no"
+

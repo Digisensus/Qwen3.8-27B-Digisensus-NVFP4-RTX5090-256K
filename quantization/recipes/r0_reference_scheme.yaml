@@ -1,0 +1,33 @@
+# R0 — CONTROL. The scheme of another RTX 5090-adjusted NVFP4 quant, reconstructed from its config.json,
+# calibrated on OUR corpus. Isolates calibration effect from scheme effect (TODO 4.1).
+#
+#  fp8   : W8A8 FP8 — channel weights, dynamic per-token activations
+#          self_attn q/k/v/o, GDN in_proj_qkv/in_proj_z/out_proj, lm_head, MLP of layers 56-63
+#  nvfp4 : W4A4 NVFP4 — tensor_group g16, fp8 scales, static actorder; MLP of layers 0-55
+#  kv    : fp8 static per-tensor k/v scales on the 16 full-attention layers
+#  untouched (bf16): embed_tokens, GDN in_proj_a/in_proj_b/conv1d/norms, vision tower, MTP head
+#
+# Layer ranges are written as NON-overlapping regexes on purpose: compressed-tensors
+# resolves a module matching several groups by target order, which is easy to get wrong.
+# {LAST_NVFP4} / {FIRST_FP8} are substituted by quantize.py (smoke test uses a 4-layer model).
+quant_stage:
+  quant_modifiers:
+    GPTQModifier:
+      block_size: 128
+      dampening_frac: 0.01
+      ignore: ["re:.*visual.*", "re:^mtp.*", "re:.*linear_attn\\.in_proj_(a|b)$"]
+      config_groups:
+        fp8:
+          targets:
+            - "re:.*self_attn\\.(q|k|v|o)_proj$"
+            - "re:.*linear_attn\\.(in_proj_qkv|in_proj_z|out_proj)$"
+            - "re:.*lm_head"
+            - "re:.*layers\\.({FP8_MLP_LAYERS})\\.mlp\\.(gate|up|down)_proj$"
+          weights: {num_bits: 8, type: float, strategy: channel, symmetric: true, dynamic: false, observer: memoryless_minmax}
+          input_activations: {num_bits: 8, type: float, strategy: token, symmetric: true, dynamic: true}
+        nvfp4:
+          targets:
+            - "re:.*layers\\.({NVFP4_MLP_LAYERS})\\.mlp\\.(gate|up|down)_proj$"
+          weights: {num_bits: 4, type: float, strategy: tensor_group, group_size: 16, symmetric: true, dynamic: false, scale_dtype: float8_e4m3fn, actorder: static}
+          input_activations: {num_bits: 4, type: float, strategy: tensor_group, group_size: 16, symmetric: true, dynamic: local, observer: static_minmax, scale_dtype: float8_e4m3fn}
+      kv_cache_scheme: {num_bits: 8, type: float, strategy: tensor, symmetric: true, dynamic: false, observer: static_minmax}

@@ -1,0 +1,20 @@
+--- a/vllm/model_executor/models/qwen3_5_mtp.py
++++ b/vllm/model_executor/models/qwen3_5_mtp.py
+@@ -79,9 +79,17 @@
+         self.mtp_start_layer_idx = config.num_hidden_layers
+         self.num_mtp_layers = getattr(config, "mtp_num_hidden_layers", 1)
+ 
++        # LOCAL PATCH (2026-09-21): same as qwen3_5.py — the drafter first loads its own
++        # embed_tokens from the checkpoint (then shares the target's), so it must accept
++        # the quantized INT8 embedding too.
+         self.embed_tokens = VocabParallelEmbedding(
+             self.vocab_size,
+             config.hidden_size,
++            quant_config=quant_config,
++            # NOT f"{prefix}.embed_tokens": prefix is "mtp...", and the checkpoint's
++            # "re:^mtp.*" ignore rule would mark it unquantized. It holds the same tensor
++            # as the target's embed_tokens (and is replaced by it after loading).
++            prefix="embed_tokens",
+         )
+ 
+         # Workaround: mtp.fc is stored as BF16 in NVFP4 checkpoints but is

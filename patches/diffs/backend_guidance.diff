@@ -1,0 +1,96 @@
+--- a
++++ b
+@@ -225,32 +225,83 @@
+         self.ll_matcher.reset()
+ 
+ 
++# LOCAL PATCH (2026-09-21): the model sometimes closes a Lithuanian „quotation with an
++# unescaped ASCII '"' inside a JSON string. That '"' ENDS the string, the grammar happily
++# continues with the next key, and the rest of the field is silently lost (HTTP 200,
++# schema-valid). Measured on real scoring requests: 44% of quotations, 7/24 responses; a
++# prompt instruction only brought it to 17-31%. Fix: every free-text string gets a pattern
++# under which an opened „ must be closed by “ or ” before any '"' or the end of the value,
++# so the grammar itself refuses the truncating quote. Strings that already carry
++# pattern / enum / const / format are left alone. Disable: VLLM_JSON_BALANCED_QUOTES=0.
++_BALANCED_QUOTES = os.environ.get("VLLM_JSON_BALANCED_QUOTES", "1") != "0"
++_QUOTE_PATTERN = "^(?:[^\u201e]|\u201e[^\u201e\u201c\u201d\"]*[\u201c\u201d])*$"
++
++
++def _require_closed_quotations(spec: str | dict[str, Any]) -> str | dict[str, Any]:
++    was_str = isinstance(spec, str)
++    schema = json.loads(spec) if was_str else json.loads(json.dumps(spec))
++
++    def is_string(node: dict) -> bool:
++        t = node.get("type")
++        return t == "string" or (isinstance(t, list) and "string" in t)
++
++    def walk(node: Any) -> None:
++        if isinstance(node, dict):
++            if is_string(node) and not any(k in node for k in ("pattern", "enum", "const", "format")):
++                node["pattern"] = _QUOTE_PATTERN
++            for v in node.values():
++                walk(v)
++        elif isinstance(node, list):
++            for v in node:
++                walk(v)
++
++    walk(schema)
++    return json.dumps(schema) if was_str else schema
++
++
+ def serialize_guidance_grammar(
+     request_type: StructuredOutputOptions,
+     grammar_spec: str | dict[str, Any],
+     disable_any_whitespace: bool = False,
+     disable_additional_properties: bool = False,
+ ) -> str:
++    def _allow_leading_ws(serialized: str) -> str:
++        # LOCAL PATCH (2026-09-19): with MTP + reasoning parser, the
++        # "\n\n" token after </think> can reach the grammar before the "{".
++        # Stock llguidance JSON rejects it, stops the matcher, and vLLM then
++        # returns truncated content ('{"') with HTTP 200. Wrap the JSON
++        # grammar in a lark rule that tolerates leading whitespace only.
++        schema = json.loads(serialized)["grammars"][0]["json_schema"]
++        return llguidance.LLMatcher.grammar_from_lark(
++            "start: WS? j\nWS: /[ \\t\\r\\n]+/\nj: %json " + json.dumps(schema)
++        )
++
+     def _process_schema(
+         grammar_spec: str | dict[str, Any],
+     ) -> str:
+         if disable_additional_properties:
+             grammar_spec = process_for_additional_properties(grammar_spec)
+-        return llguidance.LLMatcher.grammar_from_json_schema(
+-            grammar_spec,
+-            defaults={
+-                "whitespace_flexible": not disable_any_whitespace,
+-            },
++        if _BALANCED_QUOTES:
++            grammar_spec = _require_closed_quotations(grammar_spec)
++        return _allow_leading_ws(
++            llguidance.LLMatcher.grammar_from_json_schema(
++                grammar_spec,
++                defaults={
++                    "whitespace_flexible": not disable_any_whitespace,
++                },
++            )
+         )
+ 
+     if request_type == StructuredOutputOptions.JSON:
+         return _process_schema(grammar_spec)
+     elif request_type == StructuredOutputOptions.JSON_OBJECT:
+-        return llguidance.LLMatcher.grammar_from_json_schema(
+-            '{"type": "object"}',
+-            defaults={
+-                "whitespace_flexible": not disable_any_whitespace,
+-            },
++        return _allow_leading_ws(
++            llguidance.LLMatcher.grammar_from_json_schema(
++                '{"type": "object"}',
++                defaults={
++                    "whitespace_flexible": not disable_any_whitespace,
++                },
++            )
+         )
+     else:
+         if request_type == StructuredOutputOptions.REGEX:

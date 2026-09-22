@@ -1,0 +1,18 @@
+--- a/vllm/model_executor/models/qwen3_5.py
++++ b/vllm/model_executor/models/qwen3_5.py
+@@ -241,9 +241,15 @@
+ 
+         self.vocab_size = config.vocab_size
+ 
++        # LOCAL PATCH (2026-09-21): pass quant_config so compressed-tensors can serve a
++        # weight-only INT8 embedding (CompressedTensorsEmbeddingWNA16Int). Upstream
++        # builds it unquantized, so a quantized embed_tokens fails to load. Unquantized
++        # checkpoints are unaffected (get_quant_method returns None -> plain embedding).
+         self.embed_tokens = VocabParallelEmbedding(
+             self.vocab_size,
+             config.hidden_size,
++            quant_config=self.quant_config,
++            prefix=f"{prefix}.embed_tokens",
+         )
+ 
+         def get_layer(prefix: str):

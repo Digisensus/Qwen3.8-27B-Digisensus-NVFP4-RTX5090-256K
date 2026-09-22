@@ -1,0 +1,125 @@
+--- a/vllm/v1/engine/detokenizer.py
++++ b/vllm/v1/engine/detokenizer.py
+@@ -1,5 +1,6 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++import os
+ import sys
+ from abc import ABC, abstractmethod
+ 
+@@ -27,6 +28,30 @@
+ # Error string from https://github.com/huggingface/tokenizers/blob/909fdde2a4ffedd9295206f705eb612be2a91b12/tokenizers/src/tokenizer/mod.rs#L1042
+ INVALID_PREFIX_ERR_MSG = "Invalid prefix encountered"
+ 
++# LOCAL PATCH (vllm#52393): stop strings must not fire inside the reasoning block.
++# Upstream matches `stop` against the whole generated stream, so a stop string such as
++# '"' that the model happens to write while thinking ends the request mid-thought.
++# With this patch stop strings are only evaluated on text after the end-of-reasoning
++# token. Set VLLM_STOP_STRINGS_IN_REASONING=1 to restore upstream behaviour.
++_GATE_STOP_ON_REASONING = os.environ.get("VLLM_STOP_STRINGS_IN_REASONING", "0") != "1"
++_THINK_START, _THINK_END = "<think>", "</think>"
++_think_ids_cache: dict[int, tuple[int | None, int | None]] = {}
++
++
++def _think_token_ids(tokenizer) -> tuple[int | None, int | None]:
++    """(start_id, end_id) of the reasoning delimiters, or (None, None) if the
++    tokenizer does not have them as single tokens."""
++    key = id(tokenizer)
++    ids = _think_ids_cache.get(key)
++    if ids is None:
++        try:
++            added = tokenizer.get_added_vocab()
++            ids = (added.get(_THINK_START), added.get(_THINK_END))
++        except Exception:
++            ids = (None, None)
++        _think_ids_cache[key] = ids
++    return ids
++
+ 
+ class IncrementalDetokenizer:
+     def __init__(self):
+@@ -60,10 +85,12 @@
+ 
+         if USE_FAST_DETOKENIZER and isinstance(tokenizer, TokenizersBackend):
+             # Fast tokenizer => use tokenizers library DecodeStream.
+-            return FastIncrementalDetokenizer(tokenizer, request)
+-
+-        # Fall back to slow python-based incremental detokenization.
+-        return SlowIncrementalDetokenizer(tokenizer, request)
++            detok = FastIncrementalDetokenizer(tokenizer, request)
++        else:
++            # Fall back to slow python-based incremental detokenization.
++            detok = SlowIncrementalDetokenizer(tokenizer, request)
++        detok._init_reasoning_gate(tokenizer, request)
++        return detok
+ 
+ 
+ class BaseIncrementalDetokenizer(IncrementalDetokenizer, ABC):
+@@ -93,6 +120,30 @@
+         # Generation data
+         self.output_text = ""
+ 
++        # Reasoning gate for stop strings (local patch, see top of file).
++        self._think_start_id: int | None = None
++        self._think_end_id: int | None = None
++        self._in_reasoning = False
++        # Stop strings may only match at or after this offset in output_text.
++        self._stop_floor = 0
++
++    def _init_reasoning_gate(self, tokenizer, request: EngineCoreRequest) -> None:
++        if not (_GATE_STOP_ON_REASONING and self.stop):
++            return
++        start_id, end_id = _think_token_ids(tokenizer)
++        if end_id is None:
++            return
++        self._think_start_id, self._think_end_id = start_id, end_id
++        # The chat template decides whether generation begins inside the reasoning
++        # block: the prompt ends with '<think>\n' when thinking is on and with
++        # '<think>\n\n</think>\n\n' when it is off. Whichever delimiter comes last wins.
++        for tid in reversed(request.prompt_token_ids or ()):
++            if tid == end_id:
++                break
++            if tid == start_id:
++                self._in_reasoning = True
++                break
++
+     def update(self, new_token_ids: list[int], stop_terminated: bool) -> str | None:
+         """
+         Update RequestState for the request_id by:
+@@ -121,6 +172,14 @@
+             # Support min_tokens, see https://github.com/vllm-project/vllm/pull/22014
+             if self.min_tokens and self.num_output_tokens() <= self.min_tokens:
+                 stop_check_offset = len(self.output_text)
++            if self._think_end_id is not None:
++                if new_token_id == self._think_end_id:
++                    self._in_reasoning = False
++                    self._stop_floor = stop_check_offset = len(self.output_text)
++                elif new_token_id == self._think_start_id:
++                    self._in_reasoning = True
++                if self._in_reasoning:
++                    self._stop_floor = stop_check_offset = len(self.output_text)
+ 
+         if skipped_stop_token_id is not None:
+             # Cleanup after skipping detokenization.
+@@ -129,8 +188,11 @@
+         # 2) Evaluate stop strings.
+         stop_string = None
+         if self.stop and self.num_output_tokens() > self.min_tokens:
++            # Only text after the reasoning block is searched, so a stop string can
++            # never match across (or inside) the end-of-reasoning boundary.
++            floor = self._stop_floor
+             stop = check_stop_strings(
+-                output_text=self.output_text,
++                output_text=self.output_text[floor:] if floor else self.output_text,
+                 new_char_count=len(self.output_text) - stop_check_offset,
+                 stop=self.stop,
+                 include_in_output=self.include_stop_str_in_output,
+@@ -138,7 +200,7 @@
+             if stop is not None:
+                 stop_string, truncate_to = stop
+                 if truncate_to != -1:
+-                    self.output_text = self.output_text[:truncate_to]
++                    self.output_text = self.output_text[: floor + truncate_to]
+ 
+         return stop_string
+ 
